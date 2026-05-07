@@ -90,17 +90,29 @@ estado da heap em tempo real
 
 blocos ocupados e livres
 
-▶️ Como Executar o Projeto (visão inicial)
+▶️ Como Executar o Projeto
 
-Compilar o projeto Java
+Para compilar e executar o código sem erros a partir do diretório do projeto:
 
-Executar a aplicação principal (App.java)
+```bash
+# Compilar todas as classes necessárias
+javac model\Heap.java model\Requisitor_Memoria.java model\WorstFit.java model\GerenciadorLiberacao.java model\WorstFitMenu.java
 
-Interface JavaFX será aberta
+# Executar o menu interativo
+java model.WorstFitMenu
+```
 
-Usuário poderá iniciar a simulação
+Se quiser apenas testar o algoritmo Worst Fit diretamente, use:
 
-(Detalhes serão refinados conforme implementação)
+```bash
+# Compilar classes necessárias para o teste
+javac model\Heap.java model\WorstFit.java model\WorstFitTest.java
+
+# Executar o teste
+java model.WorstFitTest
+```
+
+> Observação: esses comandos assumem que o Java está instalado e que o diretório atual é o da raiz do projeto.
 
 🎯 Objetivo Final
 
