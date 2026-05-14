@@ -2,6 +2,8 @@ package model;
 
 import java.util.Random;
 
+import model.GerenciadorLiberacao.RelatorioLiberacao;
+
 /**
  * Gerenciador de liberação RANDOM para um simulador de heap.
  *
@@ -111,7 +113,8 @@ public class GerenciadorLiberacao {
         while (pos < capacidade) {
             if (heap.get(pos) != Heap.FREE) {
                 contador++;
-                while (pos < capacidade && heap.get(pos) != Heap.FREE) {
+                int id = heap.get(pos); // captura o ID da requisição atual
+                while (pos < capacidade && heap.get(pos) == id) { // para ao mudar de ID ou encontrar FREE
                     pos++;
                 }
             } else {
@@ -125,8 +128,9 @@ public class GerenciadorLiberacao {
         while (pos < capacidade) {
             if (heap.get(pos) != Heap.FREE) {
                 int start = pos;
+                int id = heap.get(pos); // captura o ID da requisição atual
                 int tamanho = 0;
-                while (pos < capacidade && heap.get(pos) != Heap.FREE) {
+                while (pos < capacidade && heap.get(pos) == id) { // para ao mudar de ID ou encontrar FREE
                     tamanho++;
                     pos++;
                 }
