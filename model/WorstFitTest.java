@@ -141,13 +141,13 @@ public class WorstFitTest {
         System.out.println("║ OBJETIVO: Minimizar efeitos de fragmentação                   ║");
         System.out.println("║                                                               ║");
         System.out.println("║ VANTAGENS:                                                    ║");
-        System.out.println("║ ✓ Reduz fragmentação deixando blocos maiores intactos         ║");
-        System.out.println("║ ✓ Melhor para alocações futuras de tamanho grande             ║");
+        System.out.println("║ V Reduz fragmentação deixando blocos maiores intactos         ║");
+        System.out.println("║ V Melhor para alocações futuras de tamanho grande             ║");
         System.out.println("║                                                               ║");
         System.out.println("║ DESVANTAGENS:                                                 ║");
-        System.out.println("║ ✗ Usa mais memória por alocação (maior espaço ocupado)        ║");
-        System.out.println("║ ✗ Mais lento que First Fit (sempre percorre todo o array)     ║");
-        System.out.println("║ ✗ Pode aumentar fragmentação a longo prazo                    ║");
+        System.out.println("║ X Usa mais memória por alocação (maior espaço ocupado)        ║");
+        System.out.println("║ X Mais lento que First Fit (as vezes percorre todo o array)   ║");
+        System.out.println("║ X Pode aumentar fragmentação a longo prazo                    ║");
         System.out.println("╚═══════════════════════════════════════════════════════════════╝\n");
     }
 
