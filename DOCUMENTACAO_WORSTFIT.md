@@ -2,11 +2,22 @@
 
 ## 📋 Visão Geral
 
-A classe `WorstFit` implementa o **algoritmo Worst Fit** para alocação dinâmica de memória em um simulador educacional de gerenciamento de heap. O algoritmo seleciona o **maior bloco livre disponível** que possa acomodar uma requisição de alocação.
+A classe `WorstFit` implementa o **algoritmo Worst Fit** para alocação dinâmica de memória em um simulador educacional de gerenciamento de heap. O projeto atualmente segue uma arquitetura híbrida:
+
+- **Frontend web em React + TypeScript + Vite** para interface interativa e visualização da simulação
+- **Modelo em Java** para implementação do algoritmo, controle da heap e comunicação com a camada de servidor
+- A antiga abordagem baseada em **JavaFX** foi substituída por uma interface web, o que facilita a execução em navegador e a integração com APIs
 
 ---
 
-## 🏗️ Arquitetura Interna
+## 🏗️ Arquitetura Atual do Projeto
+
+### Componentes principais
+
+- **Frontend**: localizado na pasta `frontend/`, com componentes para painel de simulação, grid de memória, métricas, log de eventos e configuração
+- **Modelo/ lógica**: localizado na pasta `model/`, contendo as classes `WorstFit`, `Heap`, `Requisitor_Memoria`, `HeapApiServer` e testes associados
+- **Sincronização/ concorrência**: arquivos em `sync/` para explorar conceitos de semáforos e sincronização
+- **Comunicação**: o frontend consome a API do servidor Java para exibir os resultados da simulação em tempo real
 
 ### Representação da Heap
 
@@ -17,16 +28,17 @@ heap = int[heapSize]
 ```
 
 Onde:
+
 - **Cada posição** = inteiro de 4 bytes
 - **Tamanho total em bytes** = `heapSize * 4`
 - **Inicializado pelo usuário** em kilobytes (KB)
 
 ### Convenção de Marcação de Blocos
 
-| Valor em heap[i] | Significado | Tamanho |
-|---|---|---|
-| **Valor > 0** | Bloco OCUPADO | `valor` inteiros |
-| **Valor < 0** | Bloco LIVRE | `-valor` inteiros |
+| Valor em heap[i] | Significado   | Tamanho           |
+| ---------------- | ------------- | ----------------- |
+| **Valor > 0**    | Bloco OCUPADO | `valor` inteiros  |
+| **Valor < 0**    | Bloco LIVRE   | `-valor` inteiros |
 
 **Importante:** Apenas a primeira posição de cada bloco contém a marcação. As demais posições do bloco não são marcadas individualmente.
 
@@ -89,9 +101,11 @@ funcao allocate(tamanhoEmBytes):
 Inicializa uma nova heap com o tamanho especificado.
 
 **Parâmetros:**
+
 - `sizeInKB` — Tamanho total em kilobytes
 
 **Exemplo:**
+
 ```java
 WorstFit heap = new WorstFit(64);  // 64 KB = 65.536 bytes = 16.384 inteiros
 ```
@@ -103,13 +117,16 @@ WorstFit heap = new WorstFit(64);  // 64 KB = 65.536 bytes = 16.384 inteiros
 Aloca um bloco de memória usando Worst Fit.
 
 **Parâmetros:**
+
 - `sizeInBytes` — Tamanho desejado em bytes
 
 **Retorno:**
+
 - Índice inicial do bloco alocado (>= 0)
 - `-1` se sem espaço suficiente
 
 **Exemplo:**
+
 ```java
 int addr = heap.allocate(256);  // Aloca 256 bytes
 if (addr != -1) {
@@ -120,6 +137,7 @@ if (addr != -1) {
 ```
 
 **Comportamento:**
+
 1. Percorre toda a heap identificando blocos livres
 2. Seleciona o MAIOR bloco que caba a requisição
 3. Marca-o como ocupado
@@ -132,15 +150,18 @@ if (addr != -1) {
 Libera um bloco de memória previamente alocado.
 
 **Parâmetros:**
+
 - `index` — Índice inicial do bloco
 - `sizeInBytes` — Tamanho do bloco em bytes
 
 **Exemplo:**
+
 ```java
 heap.deallocate(addr, 256);  // Libera o bloco
 ```
 
 **Comportamento:**
+
 1. Marca o bloco como livre (negativo)
 2. Executa coalescência com blocos adjacentes livres
 3. Reduz fragmentação
@@ -152,6 +173,7 @@ heap.deallocate(addr, 256);  // Libera o bloco
 Exibe o estado completo da heap no console.
 
 **Saída Exemplo:**
+
 ```
 ========== ESTADO DA HEAP ==========
 Tamanho total: 64 KB (65536 bytes, 16384 inteiros)
@@ -173,16 +195,19 @@ Fragmentação externa: 99.69%
 Calcula a fragmentação externa da heap.
 
 **Fórmula:**
+
 ```
 Fragmentação = (Espaço livre total - Maior bloco livre) / Espaço livre total
 ```
 
 **Retorno:**
+
 - Percentual de fragmentação (0 a 100)
 - 0% = sem fragmentação (um único bloco livre)
 - 100% = máxima fragmentação (sem bloco contíguo grande)
 
 **Exemplo:**
+
 ```java
 double frag = heap.calculateExternalFragmentation();
 System.out.printf("Fragmentação: %.2f%%%n", frag);
@@ -195,9 +220,11 @@ System.out.printf("Fragmentação: %.2f%%%n", frag);
 Retorna o tamanho do maior bloco livre.
 
 **Retorno:**
+
 - Tamanho em inteiros
 
 **Exemplo:**
+
 ```java
 int maxFree = heap.getLargestFreeBlock();
 System.out.println("Maior bloco livre: " + (maxFree * 4) + " bytes");
@@ -210,6 +237,7 @@ System.out.println("Maior bloco livre: " + (maxFree * 4) + " bytes");
 Retornam o total de memória livre/ocupada.
 
 **Retorno:**
+
 - Tamanho em inteiros
 
 ---
@@ -293,11 +321,13 @@ heap.printHeapStatus();
 A coalescência é executada automaticamente após cada liberação (`deallocate`).
 
 **O que faz:**
+
 - Une blocos livres adjacentes em um único bloco maior
 - Reduz fragmentação externa
 - Melhora futuras alocações
 
 **Exemplo:**
+
 ```
 Antes da coalescência:
 [OCUPADO: 100][LIVRE: 50][LIVRE: 75][OCUPADO: 200]
@@ -310,26 +340,28 @@ Depois da coalescência:
 
 ## 📊 Análise Comparativa: Worst Fit vs. First Fit
 
-| Aspecto | **Worst Fit** | **First Fit** |
-|---|---|---|
-| **Seleção** | Maior bloco | Primeiro bloco adequado |
-| **Complexidade** | O(n) | O(n) |
-| **Fragmentação** | Menor a curto prazo | Maior a curto prazo |
-| **Velocidade** | Mais lento | Mais rápido |
-| **Espaço ocupado** | Maior | Menor |
-| **Blocos grandes** | Preserva | Fragmenta |
+| Aspecto            | **Worst Fit**       | **First Fit**           |
+| ------------------ | ------------------- | ----------------------- |
+| **Seleção**        | Maior bloco         | Primeiro bloco adequado |
+| **Complexidade**   | O(n)                | O(n)                    |
+| **Fragmentação**   | Menor a curto prazo | Maior a curto prazo     |
+| **Velocidade**     | Mais lento          | Mais rápido             |
+| **Espaço ocupado** | Maior               | Menor                   |
+| **Blocos grandes** | Preserva            | Fragmenta               |
 
 ---
 
 ## 🐛 Validações e Erros
 
 A classe valida:
+
 - ✓ Tamanho de heap > 0 KB
 - ✓ Índices válidos em deallocate
 - ✓ Tamanhos coerentes
 - ✓ Evita loops infinitos
 
 **Comportamento em erro:**
+
 - Retorna `-1` em alocação sem espaço
 - Imprime erro em stderr para deallocate inválido
 - Continua operável
@@ -338,19 +370,22 @@ A classe valida:
 
 ## 📝 Notas de Implementação
 
-1. **Sem bibliotecas externas**: Apenas arrays primitivos `int[]`
-2. **Sem List/ArrayList**: Controle manual de índices
-3. **O(n) obrigatório**: Percorre TODA a heap em alocação
-4. **Código didático**: Comentários em português, estrutura clara
-5. **Adequado para educação**: Transparência do algoritmo garantida
+1. **Lógica central simples**: a implementação do algoritmo continua baseada em arrays primitivos `int[]`
+2. **Sem List/ArrayList**: Controle manual de índices para manter a transparência didática
+3. **O(n) obrigatório**: a busca por blocos livres percorre toda a heap em alocação
+4. **Interface web moderna**: a visualização foi migrada para React/Vite em vez de JavaFX
+5. **Código didático**: comentários em português, estrutura clara e foco no ensino de gerenciamento de memória
 
 ---
 
 ## 🔗 Integração com o Projeto
 
 A classe `WorstFit` pode ser integrada com:
-- `Heap.java` — Classe base de representação
-- `Requisitor_Memoria.java` — Gerador de requisições
+
+- `frontend/` — Interface web em React para visualização e interação com a simulação
+- `Heap.java` — Classe base de representação da heap
+- `HeapApiServer.java` — Servidor/API que expõe a lógica do simulador para o frontend
+- `Requisitor_Memoria.java` — Gerador de requisições e cenários de teste
 - Algoritmos alternativos (FirstFit, BestFit, etc.)
 
 ---
