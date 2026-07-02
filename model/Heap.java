@@ -1,171 +1,62 @@
 package model;
 
-import java.util.Arrays;
-
 /**
- * Representa a memória simulada (heap) do sistema.
+ * Representa a heap simulada como um vetor de inteiros.
  *
- * Internamente é um vetor de inteiros onde:
- *   - 0  → bloco livre
- *   - ID → bloco ocupado pela requisição de ID correspondente
+ * Cada posição equivale a 4 bytes.
+ *   - 0  (FREE) = posição livre
+ *   - ID > 0    = posição ocupada pela requisição com esse ID
  *
- * O tamanho é configurável na construção e não muda durante a execução.
+ * Esta classe não tem conhecimento de threads nem de semáforos.
+ * A sincronização é responsabilidade de quem a usa (WorstFit).
  */
 public class Heap {
 
-    /** Valor que representa um bloco de memória livre. */
     public static final int FREE = 0;
 
-    private final int   capacity;
-    private final int[] memory;
+    private final int[] data;
 
-    /**
-     * Cria uma heap com o tamanho informado, totalmente livre.
-     *
-     * @param capacity número de blocos de memória (deve ser maior que zero)
-     * @throws IllegalArgumentException se capacity for menor ou igual a zero
-     */
     public Heap(int capacity) {
         if (capacity <= 0) {
-            throw new IllegalArgumentException(
-                "A capacidade da heap deve ser maior que zero. Recebido: " + capacity
-            );
+            throw new IllegalArgumentException("Capacidade deve ser maior que 0");
         }
-        this.capacity = capacity;
-        this.memory   = new int[capacity]; // Java já inicializa com 0 (FREE)
+        this.data = new int[capacity];
     }
 
-    // -------------------------------------------------------------------------
-    // Leitura
-    // -------------------------------------------------------------------------
-
-    /**
-     * Retorna a capacidade total da heap (número de blocos).
-     *
-     * @return capacidade configurada na construção
-     */
     public int getCapacity() {
-        return capacity;
+        return data.length;
     }
 
-    /**
-     * Retorna o valor armazenado em uma posição específica.
-     * 0 = livre, qualquer outro valor = ID da requisição que ocupa o bloco.
-     *
-     * @param index posição a consultar
-     * @return valor no índice informado
-     * @throws IndexOutOfBoundsException se o índice for inválido
-     */
     public int get(int index) {
-        validateIndex(index);
-        return memory[index];
+        return data[index];
     }
 
-    /**
-     * Verifica se um bloco específico está livre.
-     *
-     * @param index posição a verificar
-     * @return {@code true} se o bloco estiver livre
-     */
-    public boolean isFree(int index) {
-        validateIndex(index);
-        return memory[index] == FREE;
-    }
-
-    /**
-     * Retorna uma cópia do estado atual da memória (snapshot seguro).
-     *
-     * @return cópia do vetor interno
-     */
-    public int[] snapshot() {
-        return Arrays.copyOf(memory, capacity);
-    }
-
-    // -------------------------------------------------------------------------
-    // Escrita (acesso restrito ao pacote; services usam via métodos de negócio)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Marca um bloco como ocupado por uma requisição.
-     *
-     * @param index posição a ocupar
-     * @param requestId ID da requisição dona do bloco
-     */
+    /** Marca a posição com o ID da requisição. Acesso de pacote — só WorstFit chama. */
     void set(int index, int requestId) {
-        validateIndex(index);
-        memory[index] = requestId;
+        data[index] = requestId;
     }
 
-    /**
-     * Libera um bloco, marcando-o como livre (FREE = 0).
-     *
-     * @param index posição a liberar
-     */
+    /** Libera a posição (volta para FREE). Acesso de pacote — só WorstFit chama. */
     void free(int index) {
-        validateIndex(index);
-        memory[index] = FREE;
+        data[index] = FREE;
     }
 
-    /**
-     * Libera todos os blocos ocupados por uma requisição específica.
-     *
-     * @param requestId ID da requisição a liberar
-     * @return número de blocos liberados
-     */
-    int freeAll(int requestId) {
-        int released = 0;
-        for (int i = 0; i < capacity; i++) {
-            if (memory[i] == requestId) {
-                memory[i] = FREE;
-                released++;
-            }
-        }
-        return released;
+    public boolean isFree(int index) {
+        return data[index] == FREE;
     }
 
-    // -------------------------------------------------------------------------
-    // Métricas
-    // -------------------------------------------------------------------------
-
-    /**
-     * Conta quantos blocos estão livres.
-     *
-     * @return número de blocos livres
-     */
-    public int freeBlocks() {
+    public int countFree() {
         int count = 0;
-        for (int v : memory) {
-            if (v == FREE) count++;
-        }
+        for (int v : data) if (v == FREE) count++;
         return count;
     }
 
-    /**
-     * Conta quantos blocos estão ocupados.
-     *
-     * @return número de blocos ocupados
-     */
-    public int usedBlocks() {
-        return capacity - freeBlocks();
+    public int countOccupied() {
+        return data.length - countFree();
     }
 
-    // -------------------------------------------------------------------------
-    // Utilitários
-    // -------------------------------------------------------------------------
-
-    private void validateIndex(int index) {
-        if (index < 0 || index >= capacity) {
-            throw new IndexOutOfBoundsException(
-                "Índice " + index + " fora dos limites da heap (0–" + (capacity - 1) + ")"
-            );
-        }
-    }
-
-    @Override
-    public String toString() {
-        return "Heap{capacity=" + capacity
-             + ", used=" + usedBlocks()
-             + ", free=" + freeBlocks()
-             + ", memory=" + Arrays.toString(memory) + "}";
+    /** Retorna uma cópia do estado atual — snapshot imutável para log e visualização. */
+    public int[] snapshot() {
+        return data.clone();
     }
 }

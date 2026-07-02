@@ -1,90 +1,92 @@
 package model;
- 
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.Random;
- 
+
+import sync.Semaphore;
+
 /**
- * Representa um pedido de alocação de memória no simulador.
+ * Representa um pedido de alocação de memória.
  *
- * Cada requisição possui:
- *   - um ID único gerado automaticamente
- *   - um tamanho (em bytes) solicitado, entre 16 e 1024 bytes
+ * Cada requisição tem um ID único gerado automaticamente e um tamanho em bytes.
+ *
+ * Região crítica: o contador estático idCounter é compartilhado entre todas as
+ * instâncias e pode ser acessado por múltiplas threads simultaneamente.
+ * Protegido por BinarySemaphore (mutex) em vez de AtomicInteger, mantendo
+ * coerência com a estratégia de sincronização do projeto.
+ *
+ * O mutex só é segurado durante a leitura e incremento do contador —
+ * operação de microssegundos, contenção mínima.
  */
 public class Requisitor_Memoria {
- 
-    // Constantes de tamanho
-    public static final int MIN_SIZE = 16;      // Tamanho mínimo: 16 bytes
-    public static final int MAX_SIZE = 1024;    // Tamanho máximo: 1 KB
- 
-    // Contador estático thread-safe para geração de IDs únicos
-    private static final AtomicInteger idCounter = new AtomicInteger(1);
-    private static final Random random = new Random();
- 
+
+    public static final int MIN_SIZE = 16;
+    public static final int MAX_SIZE = 1024;
+
+    // ── Região crítica: geração de ID único ──────────────────────────────────
+    private static int idCounter = 1;
+    private static final Semaphore.BinarySemaphore idMutex = new Semaphore.BinarySemaphore();
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final java.util.Random random = new java.util.Random();
+
     private final int id;
     private final int size;
- 
-    /**
-     * Cria uma nova requisição de memória com tamanho ALEATÓRIO entre 16 e 1024 bytes.
-     * ID é gerado automaticamente.
-     */
+
+    /** Cria uma requisição com tamanho aleatório entre MIN_SIZE e MAX_SIZE. */
     public Requisitor_Memoria() {
-        this(generateRandomSize());
+        this(MIN_SIZE + random.nextInt(MAX_SIZE - MIN_SIZE + 1));
     }
- 
+
     /**
-     * Cria uma nova requisição de memória com tamanho específico.
+     * Cria uma requisição com tamanho específico em bytes.
      *
-     * @param size tamanho de memória solicitado em bytes
-     * @throws IllegalArgumentException se o tamanho for menor que 16 ou maior que 1024
+     * @param size tamanho entre MIN_SIZE e MAX_SIZE bytes
      */
     public Requisitor_Memoria(int size) {
         if (size < MIN_SIZE || size > MAX_SIZE) {
             throw new IllegalArgumentException(
-                "O tamanho da requisição deve estar entre " + MIN_SIZE + 
-                " e " + MAX_SIZE + " bytes. Recebido: " + size
-            );
+                "Tamanho deve estar entre " + MIN_SIZE + " e " + MAX_SIZE +
+                " bytes. Recebido: " + size);
         }
-        this.id   = idCounter.getAndIncrement();
+        this.id   = nextId();
         this.size = size;
     }
- 
+
     /**
-     * Gera um tamanho aleatório entre 16 e 1024 bytes.
+     * Gera o próximo ID único de forma thread-safe.
      *
-     * @return tamanho aleatório em bytes
+     * Região crítica: leitura + incremento de idCounter.
+     * Protegida por idMutex (BinarySemaphore) para garantir que duas threads
+     * não leiam o mesmo valor antes de incrementar.
      */
-    private static int generateRandomSize() {
-        return MIN_SIZE + random.nextInt(MAX_SIZE - MIN_SIZE + 1);
+    private static int nextId() {
+        try {
+            idMutex.acquire();              // P — entra na região crítica
+            try {
+                return idCounter++;         // leitura + incremento atômico via mutex
+            } finally {
+                idMutex.release();          // V — sai da região crítica
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrompido ao gerar ID de requisição", e);
+        }
     }
- 
-    /**
-     * Retorna o ID único desta requisição.
-     *
-     * @return ID da requisição
-     */
-    public int getId() {
-        return id;
-    }
- 
-    /**
-     * Retorna o tamanho de memória solicitado por esta requisição.
-     *
-     * @return tamanho em unidades de memória
-     */
-    public int getSize() {
-        return size;
-    }
- 
-    /**
-     * Reseta o contador de IDs (útil apenas para testes isolados).
-     * NÃO deve ser chamado em produção.
-     */
+
+    /** Reseta o contador (apenas para testes isolados — não usar em produção). */
     static void resetIdCounter() {
-        idCounter.set(1);
+        try {
+            idMutex.acquire();
+            try { idCounter = 1; }
+            finally { idMutex.release(); }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
- 
+
+    public int getId()   { return id;   }
+    public int getSize() { return size; }
+
     @Override
     public String toString() {
-        return "MemoryRequest{id=" + id + ", size=" + size + "}";
+        return "Requisitor_Memoria{id=" + id + ", size=" + size + "B}";
     }
 }

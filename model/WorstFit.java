@@ -1,60 +1,50 @@
 package model;
 
+import sync.Semaphore;
+
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
- * Implementação do algoritmo Worst Fit para alocação de memória em heap.
+ * Implementação do algoritmo Worst Fit com free list e sincronização por semáforo.
  *
- * Esta classe usa a implementação de heap fornecida em {@code Heap.java}.
- * A heap é representada como um vetor de inteiros no objeto {@code Heap}, onde:
- *   - 0  = bloco livre
- *   - ID = bloco ocupado pela requisição de memória com esse ID
+ * ── Algoritmo ────────────────────────────────────────────────────────────────
+ * Worst Fit: escolhe sempre o MAIOR bloco livre contíguo disponível.
+ * Objetivo: deixar os buracos menores ainda úteis para requisições futuras.
  *
- * O Worst Fit percorre toda a heap e escolhe o maior bloco livre capaz de
- * atender a requisição.
+ * ── Free list ────────────────────────────────────────────────────────────────
+ * Em vez de varrer o vetor da heap a cada alocação (O(n)), mantemos duas
+ * estruturas complementares que rastreiam apenas os blocos livres:
  *
- * <h2>Free list</h2>
- * Em vez de varrer o vetor da heap a cada alocação, esta implementação mantém
- * internamente uma <em>free list</em> — uma estrutura que rastreia apenas os
- * blocos livres existentes, sempre ordenada por tamanho decrescente.
+ *   sizeToIndices: TreeMap<tamanho, TreeSet<índices>>
+ *     - lastKey() → maior bloco em O(log n)
+ *     - inserção/remoção em O(log n)
  *
- * <p>A free list é composta por duas estruturas complementares:
- * <ul>
- *   <li>{@code sizeToIndices}: {@code TreeMap<Integer, TreeSet<Integer>>} onde
- *       a chave é o tamanho do bloco (em inteiros) e o valor é um conjunto
- *       ordenado de índices iniciais de blocos com aquele tamanho. Permite
- *       encontrar o maior bloco disponível em O(log n) via {@code lastKey()},
- *       e inserir/remover blocos em O(log n).</li>
- *   <li>{@code indexToSize}: {@code TreeMap<Integer, Integer>} onde a chave é
- *       o índice inicial do bloco livre e o valor é seu tamanho. Permite
- *       localizar um bloco pelo índice em O(log n), essencial para a
- *       coalescência durante a liberação.</li>
- * </ul>
+ *   indexToSize: TreeMap<índice, tamanho>
+ *     - lookup por posição em O(log n), necessário para coalescência
  *
- * <h2>Coalescência</h2>
- * Na liberação ({@code deallocate}), o bloco devolvido é verificado contra
- * seus vizinhos imediatos na free list:
- * <ul>
- *   <li>Vizinho à direita: existe algum bloco livre que começa em
- *       {@code index + size}? Consultado em O(log n) via {@code indexToSize}.</li>
- *   <li>Vizinho à esquerda: existe algum bloco livre que termina em
- *       {@code index - 1}? Consultado via {@code indexToSize.floorKey(index)},
- *       verificando se {@code floorKey + tamanho == index}.</li>
- * </ul>
- * Blocos adjacentes são fundidos antes da reinserção, mantendo a free list
- * sem fragmentação interna.
+ * Complexidade: alocação O(log n), liberação O(log n), inicialização O(n).
  *
- * <h2>Complexidade</h2>
- * <ul>
- *   <li>Inicialização: O(n) — uma única varredura da heap.</li>
- *   <li>Alocação: O(log n) — lookup do maior bloco + atualização da free list.</li>
- *   <li>Liberação: O(log n) — coalescência + reinserção na free list.</li>
- *   <li>Métricas ({@code getLargestFreeBlock}, {@code getTotalFreeMemory},
- *       {@code calculateExternalFragmentation}): O(log n) ou O(k), onde k é
- *       o número de blocos livres — sem varredura da heap.</li>
- * </ul>
+ * ── Região crítica e semáforo ────────────────────────────────────────────────
+ * heap[] e a free list (sizeToIndices + indexToSize) formam uma única
+ * região crítica: sempre devem estar consistentes entre si.
+ *
+ * heapMutex (BinarySemaphore) protege AMBAS as estruturas juntas.
+ * Toda chamada a allocate() e deallocate() adquire o mutex antes de tocar
+ * qualquer estrutura e o libera no finally — garantindo exclusão mútua.
+ *
+ * nextRequestId também é protegido pelo mesmo heapMutex porque é lido e
+ * incrementado dentro de allocate(), que já está na região crítica.
+ *
+ * Métodos de consulta (snapshot, getCapacity, getTotalFreeMemory, etc.)
+ * NÃO adquirem o mutex — são usados para monitoramento e podem ler um
+ * estado ligeiramente defasado, o que é aceitável para logs e visualização.
+ *
+ * ── Coalescência ─────────────────────────────────────────────────────────────
+ * Na liberação, blocos adjacentes são fundidos automaticamente:
+ *   vizinho à direita → indexToSize.get(index + size)
+ *   vizinho à esquerda → indexToSize.floorKey(index), verificando adjacência
  */
 public class WorstFit {
 
@@ -63,73 +53,43 @@ public class WorstFit {
     private final int heapSize;
     private int nextRequestId = 1;
 
-    /**
-     * Free list indexada por tamanho → conjunto de índices iniciais.
-     * {@code lastKey()} retorna o tamanho do maior bloco disponível em O(log n).
-     */
+    // ── Free list ─────────────────────────────────────────────────────────────
     private final TreeMap<Integer, TreeSet<Integer>> sizeToIndices = new TreeMap<>();
+    private final TreeMap<Integer, Integer>          indexToSize   = new TreeMap<>();
 
-    /**
-     * Índice auxiliar da free list: índice inicial → tamanho do bloco.
-     * Permite localizar e remover um bloco pelo índice em O(log n),
-     * necessário para a coalescência.
-     */
-    private final TreeMap<Integer, Integer> indexToSize = new TreeMap<>();
+    // ── Região crítica: protege heap[] + free list + nextRequestId ────────────
+    private final Semaphore.BinarySemaphore heapMutex = new Semaphore.BinarySemaphore();
+    // ─────────────────────────────────────────────────────────────────────────
 
-    // -------------------------------------------------------------------------
-    // Construtores
-    // -------------------------------------------------------------------------
+    // ── Construtores ──────────────────────────────────────────────────────────
 
-    /**
-     * Cria um WorstFit usando a heap existente.
-     *
-     * @param heap heap já inicializada pelo usuário
-     */
     public WorstFit(Heap heap) {
-        if (heap == null) {
-            throw new IllegalArgumentException("Heap não pode ser nula");
-        }
-        this.heap = heap;
+        if (heap == null) throw new IllegalArgumentException("Heap não pode ser nula");
+        this.heap     = heap;
         this.heapSize = heap.getCapacity();
         this.totalSize = heapSize * 4;
         buildFreeList();
     }
 
-    /**
-     * Cria uma nova heap com tamanho definido pelo usuário em KB.
-     *
-     * @param sizeInKB tamanho total da heap em kilobytes
-     */
     public WorstFit(int sizeInKB) {
         this(new Heap(calculateCapacity(sizeInKB)));
     }
 
     private static int calculateCapacity(int sizeInKB) {
-        if (sizeInKB <= 0) {
-            throw new IllegalArgumentException("Tamanho da heap deve ser maior que 0 KB");
-        }
+        if (sizeInKB <= 0)
+            throw new IllegalArgumentException("Tamanho deve ser maior que 0 KB");
         return (sizeInKB * 1024) / 4;
     }
 
-    // -------------------------------------------------------------------------
-    // Inicialização da free list
-    // -------------------------------------------------------------------------
+    // ── Inicialização da free list ────────────────────────────────────────────
 
-    /**
-     * Varre a heap uma única vez no construtor e popula a free list com todos
-     * os blocos livres encontrados. Blocos contíguos são agrupados em uma única
-     * entrada. Complexidade: O(n).
-     */
+    /** Varre a heap uma única vez no construtor. Chamado antes de qualquer thread existir. */
     private void buildFreeList() {
         int i = 0;
         while (i < heapSize) {
             if (heap.isFree(i)) {
-                int start = i;
-                int size = 0;
-                while (i < heapSize && heap.isFree(i)) {
-                    size++;
-                    i++;
-                }
+                int start = i, size = 0;
+                while (i < heapSize && heap.isFree(i)) { size++; i++; }
                 insertFreeBlock(start, size);
             } else {
                 i++;
@@ -137,169 +97,133 @@ public class WorstFit {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Operações internas da free list
-    // -------------------------------------------------------------------------
+    // ── Operações internas da free list (chamadas sempre dentro do heapMutex) ─
 
-    /**
-     * Insere um bloco livre nas duas estruturas da free list.
-     *
-     * @param index índice inicial do bloco na heap
-     * @param size  tamanho do bloco em inteiros
-     */
     private void insertFreeBlock(int index, int size) {
-        sizeToIndices
-            .computeIfAbsent(size, k -> new TreeSet<>())
-            .add(index);
+        sizeToIndices.computeIfAbsent(size, k -> new TreeSet<>()).add(index);
         indexToSize.put(index, size);
     }
 
-    /**
-     * Remove um bloco livre das duas estruturas da free list.
-     * Se o tamanho associado ao índice não corresponder a {@code size},
-     * o comportamento é indefinido — sempre remova com os valores corretos.
-     *
-     * @param index índice inicial do bloco na heap
-     * @param size  tamanho do bloco em inteiros
-     */
     private void removeFreeBlock(int index, int size) {
         TreeSet<Integer> indices = sizeToIndices.get(size);
         if (indices != null) {
             indices.remove(index);
-            if (indices.isEmpty()) {
-                sizeToIndices.remove(size);
-            }
+            if (indices.isEmpty()) sizeToIndices.remove(size);
         }
         indexToSize.remove(index);
     }
 
-    // -------------------------------------------------------------------------
-    // Alocação
-    // -------------------------------------------------------------------------
+    // ── Alocação ──────────────────────────────────────────────────────────────
 
     /**
-     * Aloca um bloco de memória para uma requisição sem ID explícito.
-     *
-     * @param sizeInBytes tamanho desejado em bytes
-     * @return índice inicial do bloco alocado, ou -1 se não houver espaço suficiente
+     * Aloca com ID gerado automaticamente.
+     * REGIÃO CRÍTICA: protegida por heapMutex.
      */
     public int allocate(int sizeInBytes) {
-        return allocate(sizeInBytes, nextRequestId++);
+        try {
+            heapMutex.acquire();                    // P — entra na região crítica
+            try {
+                return allocateInternal(sizeInBytes, nextRequestId++);
+            } finally {
+                heapMutex.release();                // V — sai da região crítica
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return -1;
+        }
     }
 
     /**
-     * Aloca um bloco de memória usando o ID da requisição.
-     *
-     * <p>Worst Fit: seleciona o maior bloco livre disponível que comporte a
-     * requisição. Com {@code sizeToIndices} ordenado por tamanho crescente,
-     * {@code lastKey()} retorna o maior tamanho em O(log n). Se esse maior
-     * bloco não comportar a requisição, nenhum outro comportará — retorna -1
-     * sem varrer a heap.
-     *
-     * <p>Após alocar, a free list é atualizada:
-     * <ul>
-     *   <li>Se o bloco foi totalmente consumido: remove-o da free list.</li>
-     *   <li>Se sobrou espaço: o bloco residual (índice avançado, tamanho reduzido)
-     *       é reinserido mantendo a ordenação.</li>
-     * </ul>
-     *
-     * @param sizeInBytes tamanho desejado em bytes
-     * @param requestId   ID da requisição a ser gravado nos blocos
-     * @return índice inicial do bloco alocado, ou -1 se não houver espaço suficiente
+     * Aloca com ID explícito (usado pelo benchmark e pela API).
+     * REGIÃO CRÍTICA: protegida por heapMutex.
      */
     public int allocate(int sizeInBytes, int requestId) {
-        if (sizeInBytes <= 0) {
-            throw new IllegalArgumentException("Tamanho de alocação deve ser maior que zero");
+        if (sizeInBytes <= 0) throw new IllegalArgumentException("Tamanho deve ser > 0");
+        if (requestId   <= 0) throw new IllegalArgumentException("requestId deve ser > 0");
+        try {
+            heapMutex.acquire();                    // P — entra na região crítica
+            try {
+                return allocateInternal(sizeInBytes, requestId);
+            } finally {
+                heapMutex.release();                // V — sai da região crítica
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return -1;
         }
-        if (requestId <= 0) {
-            throw new IllegalArgumentException("requestId deve ser maior que zero");
-        }
+    }
 
+    /**
+     * Núcleo do Worst Fit — chamado SOMENTE dentro do heapMutex.
+     * Não adquire lock; assume que o chamador já o fez.
+     */
+    private int allocateInternal(int sizeInBytes, int requestId) {
         int sizeInInts = (sizeInBytes + 3) / 4;
+        if (sizeToIndices.isEmpty()) return -1;
 
-        // Sem nenhum bloco livre ou o maior bloco não comporta a requisição
-        if (sizeToIndices.isEmpty()) {
-            return -1;
-        }
-        int largestSize = sizeToIndices.lastKey();
-        if (largestSize < sizeInInts) {
-            return -1;
-        }
+        int largestSize = sizeToIndices.lastKey();      // O(log n) — Worst Fit
+        if (largestSize < sizeInInts) return -1;
 
-        // Worst Fit: usar o maior bloco disponível
-        TreeSet<Integer> candidates = sizeToIndices.get(largestSize);
-        int chosenIndex = candidates.first(); // índice menor entre os de mesmo tamanho
-
-        // Remover o bloco escolhido da free list
+        int chosenIndex = sizeToIndices.get(largestSize).first();
         removeFreeBlock(chosenIndex, largestSize);
 
-        // Gravar o ID na heap
         for (int i = 0; i < sizeInInts; i++) {
             heap.set(chosenIndex + i, requestId);
         }
 
-        // Se sobrou espaço no bloco, reinsere o restante na free list
         int remainder = largestSize - sizeInInts;
         if (remainder > 0) {
-            int residualIndex = chosenIndex + sizeInInts;
-            insertFreeBlock(residualIndex, remainder);
+            insertFreeBlock(chosenIndex + sizeInInts, remainder);
         }
 
         return chosenIndex;
     }
 
-    // -------------------------------------------------------------------------
-    // Liberação
-    // -------------------------------------------------------------------------
+    // ── Liberação ─────────────────────────────────────────────────────────────
 
     /**
-     * Libera um bloco de memória previamente alocado.
-     *
-     * <p>Após liberar os slots na heap, o bloco devolvido é reinserido na
-     * free list com coalescência: blocos adjacentes (à esquerda e à direita)
-     * são fundidos antes da inserção, evitando a fragmentação da própria
-     * free list.
-     *
-     * <p>Coalescência com vizinho à direita: verifica se {@code indexToSize}
-     * contém a chave {@code index + size} — O(log n).
-     * <br>
-     * Coalescência com vizinho à esquerda: usa {@code indexToSize.floorKey(index)}
-     * para encontrar o bloco imediatamente anterior e verifica se ele termina
-     * exatamente em {@code index} — O(log n).
-     *
-     * @param index       índice inicial do bloco a liberar
-     * @param sizeInBytes tamanho do bloco em bytes
+     * Libera o bloco e reinsere na free list com coalescência.
+     * REGIÃO CRÍTICA: protegida por heapMutex.
      */
     public void deallocate(int index, int sizeInBytes) {
         if (index < 0 || index >= heapSize) {
             System.err.println("Erro: índice inválido para liberação: " + index);
             return;
         }
-
         int sizeInInts = (sizeInBytes + 3) / 4;
-
         if (index + sizeInInts > heapSize) {
             System.err.println("Erro: tamanho inválido para liberação no índice: " + index);
             return;
         }
-
-        // Liberar os slots na heap
-        for (int i = 0; i < sizeInInts; i++) {
-            heap.free(index + i);
+        try {
+            heapMutex.acquire();                    // P — entra na região crítica
+            try {
+                deallocateInternal(index, sizeInInts);
+            } finally {
+                heapMutex.release();                // V — sai da região crítica
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
+    }
 
-        // Coalescência: inicia com o bloco devolvido e expande se houver vizinhos livres
+    /**
+     * Núcleo da liberação com coalescência — chamado SOMENTE dentro do heapMutex.
+     */
+    private void deallocateInternal(int index, int sizeInInts) {
+        for (int i = 0; i < sizeInInts; i++) heap.free(index + i);
+
         int mergedIndex = index;
         int mergedSize  = sizeInInts;
 
-        // Vizinho à direita: começa em (mergedIndex + mergedSize)?
+        // Coalescência: vizinho à direita
         Integer rightSize = indexToSize.get(mergedIndex + mergedSize);
         if (rightSize != null) {
             removeFreeBlock(mergedIndex + mergedSize, rightSize);
             mergedSize += rightSize;
         }
 
-        // Vizinho à esquerda: existe bloco que termina exatamente em mergedIndex?
+        // Coalescência: vizinho à esquerda
         Integer leftStart = indexToSize.floorKey(mergedIndex);
         if (leftStart != null) {
             int leftSize = indexToSize.get(leftStart);
@@ -310,139 +234,67 @@ public class WorstFit {
             }
         }
 
-        // Inserir o bloco (possivelmente fundido) na free list
         insertFreeBlock(mergedIndex, mergedSize);
     }
 
-    // -------------------------------------------------------------------------
-    // Métricas — derivadas da free list, sem varredura da heap
-    // -------------------------------------------------------------------------
+    // ── Métricas derivadas da free list (sem varredura da heap, sem lock) ─────
 
-    /**
-     * Retorna o tamanho do maior bloco livre atual (em inteiros).
-     * Derivado diretamente da free list: O(log n).
-     */
     public int getLargestFreeBlock() {
-        if (sizeToIndices.isEmpty()) {
-            return 0;
-        }
-        return sizeToIndices.lastKey();
+        return sizeToIndices.isEmpty() ? 0 : sizeToIndices.lastKey();
     }
 
-    /**
-     * Retorna o total de memória livre (em inteiros).
-     * Derivado da free list iterando sobre os blocos: O(k), onde k é o
-     * número de blocos livres distintos — em geral muito menor que n.
-     */
     public int getTotalFreeMemory() {
         int total = 0;
-        for (Map.Entry<Integer, TreeSet<Integer>> entry : sizeToIndices.entrySet()) {
-            total += entry.getKey() * entry.getValue().size();
-        }
+        for (Map.Entry<Integer, TreeSet<Integer>> e : sizeToIndices.entrySet())
+            total += e.getKey() * e.getValue().size();
         return total;
     }
 
-    /**
-     * Retorna o total de memória ocupada (em inteiros).
-     */
     public int getTotalOccupiedMemory() {
         return heapSize - getTotalFreeMemory();
     }
 
-    /**
-     * Calcula a fragmentação externa atual da heap.
-     *
-     * <p>Definição: {@code (totalFree - largestFreeBlock) / totalFree × 100}.
-     * Derivado da free list, sem varredura da heap: O(log n + k).
-     *
-     * @return percentual de fragmentação externa (0 a 100)
-     */
     public double calculateExternalFragmentation() {
-        int totalFreeSize    = getTotalFreeMemory();
-        int largestFreeBlock = getLargestFreeBlock();
-
-        if (totalFreeSize == 0) {
-            return 0.0;
-        }
-
-        return (double) (totalFreeSize - largestFreeBlock) / totalFreeSize * 100.0;
+        int totalFree    = getTotalFreeMemory();
+        int largestBlock = getLargestFreeBlock();
+        if (totalFree == 0) return 0.0;
+        return (double)(totalFree - largestBlock) / totalFree * 100.0;
     }
 
-    // -------------------------------------------------------------------------
-    // Exibição do estado da heap
-    // -------------------------------------------------------------------------
+    // ── Estado e exibição ─────────────────────────────────────────────────────
 
-    /**
-     * Exibe o estado atual da heap, indicando quais blocos estão livres e ocupados.
-     */
     public void printHeapStatus() {
         System.out.println("\n========== ESTADO DA HEAP ==========");
         System.out.printf("Tamanho total: %d KB (%d bytes, %d inteiros)%n",
                 totalSize / 1024, totalSize, heapSize);
         System.out.println("-----------------------------------");
 
-        int currentIndex = 0;
-        int blockNumber  = 1;
-        int totalOccupied = 0;
-        int totalFree     = 0;
-
-        while (currentIndex < heapSize) {
-            int value = heap.get(currentIndex);
-            int size  = 1;
-            int nextIndex = currentIndex + 1;
-
-            while (nextIndex < heapSize && heap.get(nextIndex) == value) {
-                size++;
-                nextIndex++;
-            }
-
-            String status = value == Heap.FREE ? "LIVRE" : "OCUPADO";
-            if (value == Heap.FREE) {
-                totalFree += size;
-            } else {
-                totalOccupied += size;
-            }
-
+        int i = 0, blockNum = 1, totalOcc = 0, totalFree = 0;
+        while (i < heapSize) {
+            int value = heap.get(i), size = 1, next = i + 1;
+            while (next < heapSize && heap.get(next) == value) { size++; next++; }
+            if (value == Heap.FREE) totalFree += size; else totalOcc += size;
             System.out.printf("Bloco %2d: [%6d-%6d] %-7s (%6d inteiros = %7d bytes)%n",
-                    blockNumber, currentIndex, currentIndex + size - 1,
-                    status, size, size * 4);
-
-            currentIndex = nextIndex;
-            blockNumber++;
+                    blockNum, i, i + size - 1,
+                    value == Heap.FREE ? "LIVRE" : "OCUPADO", size, size * 4);
+            i = next; blockNum++;
         }
 
         System.out.println("-----------------------------------");
-        System.out.printf("Memória ocupada: %d inteiros (%d bytes = %.2f%%)%n",
-                totalOccupied, totalOccupied * 4,
-                (totalOccupied * 100.0) / heapSize);
-        System.out.printf("Memória livre:   %d inteiros (%d bytes = %.2f%%)%n",
-                totalFree, totalFree * 4,
-                (totalFree * 100.0) / heapSize);
+        System.out.printf("Ocupada: %d int (%d bytes = %.2f%%)%n",
+                totalOcc, totalOcc * 4, totalOcc * 100.0 / heapSize);
+        System.out.printf("Livre:   %d int (%d bytes = %.2f%%)%n",
+                totalFree, totalFree * 4, totalFree * 100.0 / heapSize);
         System.out.printf("Fragmentação externa: %.2f%%%n", calculateExternalFragmentation());
         System.out.println("====================================\n");
     }
 
-    // -------------------------------------------------------------------------
-    // Delegação para Heap
-    // -------------------------------------------------------------------------
+    // ── Delegações ────────────────────────────────────────────────────────────
 
-    /** Retorna um snapshot imutável do estado atual da heap. */
-    public int[] snapshot() {
-        return heap.snapshot();
-    }
+    public int[] snapshot()        { return heap.snapshot(); }
+    public int   getCapacity()     { return heapSize; }
+    public int   getCapacityInBytes() { return totalSize; }
 
-    /** Retorna a capacidade total da heap em inteiros. */
-    public int getCapacity() {
-        return heapSize;
-    }
-
-    /** Retorna a capacidade total da heap em bytes. */
-    public int getCapacityInBytes() {
-        return totalSize;
-    }
-
-    /** Acesso de pacote para {@code GerenciadorLiberacao}. */
-    Heap getHeap() {
-        return heap;
-    }
+    /** Acesso de pacote para GerenciadorLiberacao. */
+    Heap getHeap() { return heap; }
 }
