@@ -1,9 +1,6 @@
 package benchmark;
 
-import model.Heap;
-import model.GerenciadorLiberacao;
-import model.Requisitor_Memoria;
-import model.WorstFit;
+import model.*;
 import sync.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -131,25 +128,16 @@ public class HeapBenchmark {
     // =========================================================================
 
     /**
-     * Executa o comparativo completo: warmup + medição sequencial e paralela.
-     * Retorna BenchmarkResult pronto para serialização.
-     *
-     * Este método é thread-safe: pode ser chamado por múltiplas requisições HTTP
-     * simultâneas (cada chamada cria seus próprios objetos internos).
+     * @deprecated Use main() ou implemente a chamada diretamente com os 3 métodos.
+     * Este método foi removido porque usava os antigos runSequential/runParallel.
      */
+    @Deprecated
     public static BenchmarkResult executarComparativo(BenchmarkParams params) {
-        Requisitor_Memoria[] requests = generateRequests(params);
-
-        RoundResult[] seqResults = runWithWarmup(p -> runSequential(p, params), requests);
-        RoundResult[] parResults = runWithWarmup(p -> runParallel(p, params),   requests);
-
-        long[] seqAgg = aggregate(seqResults);
-        long[] parAgg = aggregate(parResults);
-
-        return new BenchmarkResult(
-            params, seqAgg, parAgg,
-            seqResults[seqResults.length - 1],
-            parResults[parResults.length - 1]
+        throw new UnsupportedOperationException(
+            "Método removido. Use main(String[]) para 3 versões ou chame diretamente:\n" +
+            "  - runSequentialUnsafe(requests, params)\n" +
+            "  - runParallelSynchronized(requests, params)\n" +
+            "  - runParallelPartitioned(requests, params)"
         );
     }
 
@@ -171,35 +159,12 @@ public class HeapBenchmark {
     // =========================================================================
     // Núcleo: processar uma requisição (sem E/S, sem lock próprio)
     // =========================================================================
-
-    /**
-     * Tenta alocar; se falhar, aciona RANDOM e tenta de novo.
-     * Retorna: 1=sucesso direto, 2=sucesso após RANDOM, -1=rejeitada.
-     *
-     * IMPORTANTE: chamado FORA de qualquer lock.
-     * deallocate() dentro de executarLiberacaoRandomica() adquire heapMutex
-     * internamente no WorstFit. allocate() também o faz. Não há reentrada.
-     */
-    static int processRequest(WorstFit wf, GerenciadorLiberacao gerenciador,
-                               Requisitor_Memoria req) {
-        int result = wf.allocate(req.getSize(), req.getId());
-        if (result >= 0) return 1;
-
-        // Falhou: aciona RANDOM (fora de qualquer lock — ver Javadoc do GerenciadorLiberacao)
-        GerenciadorLiberacao.RelatorioLiberacao rel = gerenciador.executarLiberacaoRandomica();
-        if (rel.getBlocosLiberados() == 0) return -1;
-
-        result = wf.allocate(req.getSize(), req.getId());
-        return result >= 0 ? 2 : -1;
-    }
-
-    // =========================================================================
-    // Modo SEQUENCIAL — thread única, sem overhead de sincronização
+    // Modo SEQUENCIAL — WorstFitUnsafe (sem sincronização)
     // =========================================================================
 
-    static RoundResult runSequential(Requisitor_Memoria[] requests, BenchmarkParams p) {
-        WorstFit             wf         = new WorstFit(new Heap((p.heapKb * 1024) / 4));
-        GerenciadorLiberacao gerenciador = new GerenciadorLiberacao(wf);
+    static RoundResult runSequentialUnsafe(Requisitor_Memoria[] requests, BenchmarkParams p) {
+        WorstFitUnsafe wf = new WorstFitUnsafe(new Heap((p.heapKb * 1024) / 4));
+        GerenciadorLiberacaoUnsafe gerenciador = new GerenciadorLiberacaoUnsafe(wf);
 
         int served = 0, rejected = 0, randoms = 0;
 
@@ -207,7 +172,7 @@ public class HeapBenchmark {
         long start = System.nanoTime();
 
         for (Requisitor_Memoria req : requests) {
-            int r = processRequest(wf, gerenciador, req);
+            int r = processRequestUnsafe(wf, gerenciador, req);
             if      (r ==  1) { served++;  }
             else if (r ==  2) { served++;  randoms++; }
             else if (r == -1) { rejected++; randoms++; }
@@ -219,98 +184,19 @@ public class HeapBenchmark {
         return new RoundResult(elapsed, served, rejected, randoms);
     }
 
-    // =========================================================================
-    // Modo PARALELO — 8 threads, 3 semáforos binários
-    // =========================================================================
-
-    static RoundResult runParallel(Requisitor_Memoria[] requests, BenchmarkParams p) {
-        WorstFit             wf         = new WorstFit(new Heap((p.heapKb * 1024) / 4));
-        GerenciadorLiberacao gerenciador = new GerenciadorLiberacao(wf);
-
-        // ── Três regiões críticas — três mutexes independentes ────────────────
-        // heapMutex: já interno ao WorstFit (protege heap + free list)
-        // queueMutex: protege o índice da fila compartilhada
-        // countersMutex: protege os contadores de resultado
-        Semaphore.BinarySemaphore queueMutex    = new Semaphore.BinarySemaphore();
-        Semaphore.BinarySemaphore countersMutex = new Semaphore.BinarySemaphore();
-        // ─────────────────────────────────────────────────────────────────────
-
-        // Fila protegida por queueMutex (int[] para captura em lambda)
-        int[] queueIndex = {0};
-
-        // Contadores protegidos por countersMutex
-        int[] served   = {0};
-        int[] rejected = {0};
-        int[] randoms  = {0};
-        
-        // Debug: rastrear paralelismo
-        AtomicInteger maxActiveThreads = new AtomicInteger(0);
-
-        Thread[] threads = new Thread[THREAD_COUNT];
-        AtomicInteger activeThreads = new AtomicInteger(0);  // debug: contar threads simultâneas
-        for (int t = 0; t < THREAD_COUNT; t++) {
-            threads[t] = new Thread(() -> {
-                while (true) {
-
-                    // ── RC 1: pegar próxima requisição da fila ────────────────
-                    Requisitor_Memoria req;
-                    try {
-                        queueMutex.acquire();               // P(queueMutex)
-                        try {
-                            if (queueIndex[0] >= requests.length) return;
-                            req = requests[queueIndex[0]++];
-                        } finally {
-                            queueMutex.release();           // V(queueMutex)
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt(); return;
-                    }
-
-                    // ── RC 2: alocar na heap (mutex interno ao WorstFit) ──────
-                    activeThreads.incrementAndGet();
-                    int active = activeThreads.get();
-                    if (active > maxActiveThreads.get()) {
-                        maxActiveThreads.set(active);
-                    }
-                    // processRequest chama wf.allocate() e gerenciador.executarLiberacaoRandomica()
-                    // ambos adquirem/liberam heapMutex internamente — sem reentrada
-                    int r = processRequest(wf, gerenciador, req);
-                    activeThreads.decrementAndGet();
-
-                    // ── RC 3: atualizar contadores ────────────────────────────
-                    try {
-                        countersMutex.acquire();            // P(countersMutex)
-                        try {
-                            if      (r ==  1) { served[0]++;  }
-                            else if (r ==  2) { served[0]++;  randoms[0]++; }
-                            else if (r == -1) { rejected[0]++; randoms[0]++; }
-                        } finally {
-                            countersMutex.release();        // V(countersMutex)
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt(); return;
-                    }
-                }
-            }, "heap-worker-" + t);
-        }
-
-        // ── Cronômetro: ANTES de lançar as threads ────────────────────────────
-        long start = System.nanoTime();
-
-        for (Thread t : threads) t.start();
-        for (Thread t : threads) {
-            try { t.join(); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        }
-
-        long elapsed = System.nanoTime() - start;
-        // ── Cronômetro: APÓS todas as threads terminarem ──────────────────────
-
-        // Debug: mostrar paralelismo
-        System.err.println("[DEBUG PARALELO] Máximo de threads simultâneos: " + maxActiveThreads.get() + "/" + THREAD_COUNT);
-
-        return new RoundResult(elapsed, served[0], rejected[0], randoms[0]);
+    static int processRequestUnsafe(WorstFitUnsafe wf, GerenciadorLiberacaoUnsafe gerenciador,
+                                     Requisitor_Memoria req) {
+        int result = wf.allocate(req.getSize(), req.getId());
+        if (result >= 0) return 1;
+        GerenciadorLiberacao.RelatorioLiberacao rel = gerenciador.executarLiberacaoRandomica();
+        if (rel.getBlocosLiberados() == 0) return -1;
+        result = wf.allocate(req.getSize(), req.getId());
+        return result >= 0 ? 2 : -1;
     }
+
+    // =========================================================================
+    // Modo SEQUENCIAL (antigo — manter para compatibilidade com processRequest legado)
+    // =========================================================================
 
     // =========================================================================
     // Agregação e relatório
@@ -359,7 +245,7 @@ public class HeapBenchmark {
         BenchmarkParams params = new BenchmarkParams(64, totalRequests, 16, 256);
 
         System.out.println("╔═══════════════════════════════════════════════════════╗");
-        System.out.println("║      BENCHMARK: HEAP SEQUENCIAL vs PARALELO           ║");
+        System.out.println("║  BENCHMARK: 3 VERSÕES (Unsafe, Synchronized, Partitioned)║");
         System.out.println("╠═══════════════════════════════════════════════════════╣");
         System.out.printf( "║  Heap        : %-36d KB║%n", params.heapKb);
         System.out.printf( "║  Requisições : %-37d  ║%n", params.totalRequests);
@@ -368,38 +254,207 @@ public class HeapBenchmark {
         System.out.printf( "║  Warmup      : %-37d  ║%n", WARMUP_ROUNDS);
         System.out.printf( "║  Medições    : %-37d  ║%n", MEASURE_ROUNDS);
         System.out.println("╚═══════════════════════════════════════════════════════╝");
-        System.out.println("\nGerando requisições e executando benchmark...\n");
+        System.out.println("\nGerando requisições e executando benchmarks...\n");
 
-        BenchmarkResult r = executarComparativo(params);
+        // Gera requisições uma única vez para todas as 3 versões
+        Requisitor_Memoria[] requests = generateRequests(params);
 
-        System.out.println("┌────────────────────────────────────────────────────────────┐");
-        System.out.println("│                    SEQUENCIAL                              │");
-        System.out.println("├─────────────────────────┬──────────────────────────────────┤");
-        System.out.printf( "│  Latência  mín/méd/máx  │ %7.2f / %7.2f / %7.2f ms   │%n",
-            r.seqLatencyMinMs, r.seqLatencyAvgMs, r.seqLatencyMaxMs);
-        System.out.printf( "│  Throughput mín/méd/máx │ %,7d / %,7d / %,7d req/s│%n",
-            r.seqThroughputMin, r.seqThroughputAvg, r.seqThroughputMax);
-        System.out.printf( "│  Atendidas / Rejeitadas │ %-6d / %-3d                     │%n", r.seqServed, r.seqRejected);
-        System.out.printf( "│  RANDOM acionado        │ %-4d vezes                       │%n",  r.seqRandoms);
-        System.out.println("├────────────────────────────────────────────────────────────┤");
-        System.out.println("│                     PARALELO                               │");
-        System.out.println("├─────────────────────────┬──────────────────────────────────┤");
-        System.out.printf( "│  Latência  mín/méd/máx  │ %7.2f / %7.2f / %7.2f ms   │%n",
-            r.parLatencyMinMs, r.parLatencyAvgMs, r.parLatencyMaxMs);
-        System.out.printf( "│  Throughput mín/méd/máx │ %,7d / %,7d / %,7d req/s│%n",
-            r.parThroughputMin, r.parThroughputAvg, r.parThroughputMax);
-        System.out.printf( "│  Atendidas / Rejeitadas │ %-6d / %-3d                     │%n", r.parServed, r.parRejected);
-        System.out.printf( "│  RANDOM acionado        │ %-4d vezes                       │%n",  r.parRandoms);
-        System.out.println("╠════════════════════════════════════════════════════════════╣");
-        System.out.printf( "║  Speedup latência   : %5.2fx  %-24s     ║%n",
-            r.latencySpeedup,
-            r.latencySpeedup > 1 ? "(paralelo mais rápido)" : "(sequencial mais rápido)");
-        System.out.printf( "║  Speedup throughput : %5.2fx  %-24s     ║%n",
-            r.throughputSpeedup,
-            r.throughputSpeedup > 1 ? "(paralelo mais rápido)" : "(sequencial mais rápido)");
-        System.out.println("╠════════════════════════════════════════════════════════════╣");
-        System.out.println("║  speedup < 1 = overhead de contenção > ganho de            ║");
-        System.out.println("║  paralelismo (esperado quando RC domina o tempo)           ║");
-        System.out.println("╚════════════════════════════════════════════════════════════╝");
+        System.out.println("▶ Versão 1: WorstFitUnsafe (Sequencial, sem sincronização)");
+        RoundResult[] unsafeSeqResults = runWithWarmup(p -> runSequentialUnsafe(p, params), requests);
+        long[] unsafeAgg = aggregate(unsafeSeqResults);
+
+        System.out.println("▶ Versão 2: WorstFitSynchronized (Paralelo, 1 mutex)");
+        RoundResult[] syncParResults = runWithWarmup(p -> runParallelSynchronized(p, params), requests);
+        long[] syncAgg = aggregate(syncParResults);
+
+        System.out.println("▶ Versão 3: WorstFitPartitioned (Paralelo, N mutexes)");
+        RoundResult[] partParResults = runWithWarmup(p -> runParallelPartitioned(p, params), requests);
+        long[] partAgg = aggregate(partParResults);
+
+        printComparativeResults(
+            unsafeAgg, unsafeSeqResults[unsafeSeqResults.length - 1],
+            syncAgg, syncParResults[syncParResults.length - 1],
+            partAgg, partParResults[partParResults.length - 1]
+        );
+    }
+
+    static void printComparativeResults(
+            long[] unsafeAgg, RoundResult unsafeLast,
+            long[] syncAgg, RoundResult syncLast,
+            long[] partAgg, RoundResult partLast) {
+
+        System.out.println("\n┌─────────────────────────────────────────────────────────────────┐");
+        System.out.println("│  VERSÃO 1: WorstFitUnsafe (Sequencial, sem mutex)              │");
+        System.out.println("├──────────────────┬────────────────────────────────────────────┤");
+        System.out.printf( "│  Latência média  │ %7.2f ms                                  │%n", unsafeAgg[2] / 1_000_000.0);
+        System.out.printf( "│  Throughput méd  │ %,7d req/s                              │%n", unsafeAgg[5]);
+        System.out.printf( "│  Atendidas       │ %-6d                                      │%n", unsafeLast.served);
+        System.out.printf( "│  Rejeitadas      │ %-6d                                      │%n", unsafeLast.rejected);
+        System.out.printf( "│  RANDOM acionado │ %-6d                                      │%n", unsafeLast.randoms);
+        System.out.println("├─────────────────────────────────────────────────────────────────┤");
+        System.out.println("│  VERSÃO 2: WorstFitSynchronized (Paralelo, 1 heapMutex)        │");
+        System.out.println("├──────────────────┬────────────────────────────────────────────┤");
+        System.out.printf( "│  Latência média  │ %7.2f ms                                  │%n", syncAgg[2] / 1_000_000.0);
+        System.out.printf( "│  Throughput méd  │ %,7d req/s                              │%n", syncAgg[5]);
+        System.out.printf( "│  Atendidas       │ %-6d                                      │%n", syncLast.served);
+        System.out.printf( "│  Rejeitadas      │ %-6d                                      │%n", syncLast.rejected);
+        System.out.printf( "│  RANDOM acionado │ %-6d                                      │%n", syncLast.randoms);
+        System.out.println("├─────────────────────────────────────────────────────────────────┤");
+        System.out.println("│  VERSÃO 3: WorstFitPartitioned (Paralelo, N mutexes)          │");
+        System.out.println("├──────────────────┬────────────────────────────────────────────┤");
+        System.out.printf( "│  Latência média  │ %7.2f ms                                  │%n", partAgg[2] / 1_000_000.0);
+        System.out.printf( "│  Throughput méd  │ %,7d req/s                              │%n", partAgg[5]);
+        System.out.printf( "│  Atendidas       │ %-6d                                      │%n", partLast.served);
+        System.out.printf( "│  Rejeitadas      │ %-6d                                      │%n", partLast.rejected);
+        System.out.printf( "│  RANDOM acionado │ %-6d                                      │%n", partLast.randoms);
+        System.out.println("╠═════════════════════════════════════════════════════════════════╣");
+
+        double speedupSync  = (double) unsafeAgg[2] / syncAgg[2];
+        double speedupPart  = (double) unsafeAgg[2] / partAgg[2];
+        double speedupSyncVsPart = (double) syncAgg[2] / partAgg[2];
+
+        System.out.printf( "║ Speedup Unsafe→Synchronized: %6.2fx  %-22s         ║%n",
+            speedupSync, speedupSync < 1 ? "(Sync mais lento)" : "(Sync mais rápido)");
+        System.out.printf( "║ Speedup Unsafe→Partitioned  : %6.2fx  %-22s         ║%n",
+            speedupPart, speedupPart < 1 ? "(Part mais lento)" : "(Part mais rápido)");
+        System.out.printf( "║ Speedup Synchronized→Partitioned: %6.2fx  %-16s         ║%n",
+            speedupSyncVsPart, speedupSyncVsPart < 1 ? "(Part mais lento)" : "(Part mais rápido)");
+        System.out.println("╚═════════════════════════════════════════════════════════════════╝");
+    }
+
+    static RoundResult runParallelSynchronized(Requisitor_Memoria[] requests, BenchmarkParams p) {
+        WorstFitSynchronized wf = new WorstFitSynchronized(new Heap((p.heapKb * 1024) / 4));
+        GerenciadorLiberacaoSynchronized gerenciador = new GerenciadorLiberacaoSynchronized(wf);
+
+        Semaphore.BinarySemaphore queueMutex    = new Semaphore.BinarySemaphore();
+        Semaphore.BinarySemaphore countersMutex = new Semaphore.BinarySemaphore();
+
+        int[] queueIndex = {0};
+        int[] served   = {0};
+        int[] rejected = {0};
+        int[] randoms  = {0};
+
+        Thread[] threads = new Thread[THREAD_COUNT];
+        for (int t = 0; t < THREAD_COUNT; t++) {
+            threads[t] = new Thread(() -> {
+                while (true) {
+                    Requisitor_Memoria req;
+                    try {
+                        queueMutex.acquire();
+                        try {
+                            if (queueIndex[0] >= requests.length) return;
+                            req = requests[queueIndex[0]++];
+                        } finally {
+                            queueMutex.release();
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt(); return;
+                    }
+
+                    int r = processRequestSynchronized(wf, gerenciador, req);
+
+                    try {
+                        countersMutex.acquire();
+                        try {
+                            if      (r ==  1) { served[0]++;  }
+                            else if (r ==  2) { served[0]++;  randoms[0]++; }
+                            else if (r == -1) { rejected[0]++; randoms[0]++; }
+                        } finally {
+                            countersMutex.release();
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt(); return;
+                    }
+                }
+            }, "sync-worker-" + t);
+        }
+
+        long start = System.nanoTime();
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) {
+            try { t.join(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+        long elapsed = System.nanoTime() - start;
+
+        return new RoundResult(elapsed, served[0], rejected[0], randoms[0]);
+    }
+
+    static int processRequestSynchronized(WorstFitSynchronized wf, GerenciadorLiberacaoSynchronized gerenciador,
+                                           Requisitor_Memoria req) {
+        int result = wf.allocate(req.getSize(), req.getId());
+        if (result >= 0) return 1;
+        GerenciadorLiberacao.RelatorioLiberacao rel = gerenciador.executarLiberacaoRandomica();
+        if (rel.getBlocosLiberados() == 0) return -1;
+        result = wf.allocate(req.getSize(), req.getId());
+        return result >= 0 ? 2 : -1;
+    }
+
+    static RoundResult runParallelPartitioned(Requisitor_Memoria[] requests, BenchmarkParams p) {
+        WorstFitPartitioned wf = new WorstFitPartitioned(new Heap((p.heapKb * 1024) / 4));
+        GerenciadorLiberacaoPartitioned gerenciador = new GerenciadorLiberacaoPartitioned(wf);
+
+        Semaphore.BinarySemaphore queueMutex    = new Semaphore.BinarySemaphore();
+        Semaphore.BinarySemaphore countersMutex = new Semaphore.BinarySemaphore();
+
+        int[] queueIndex = {0};
+        int[] served   = {0};
+        int[] rejected = {0};
+        int[] randoms  = {0};
+
+        Thread[] threads = new Thread[THREAD_COUNT];
+        for (int t = 0; t < THREAD_COUNT; t++) {
+            threads[t] = new Thread(() -> {
+                while (true) {
+                    Requisitor_Memoria req;
+                    try {
+                        queueMutex.acquire();
+                        try {
+                            if (queueIndex[0] >= requests.length) return;
+                            req = requests[queueIndex[0]++];
+                        } finally {
+                            queueMutex.release();
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt(); return;
+                    }
+
+                    int r = processRequestPartitioned(wf, gerenciador, req);
+
+                    try {
+                        countersMutex.acquire();
+                        try {
+                            if      (r ==  1) { served[0]++;  }
+                            else if (r ==  2) { served[0]++;  randoms[0]++; }
+                            else if (r == -1) { rejected[0]++; randoms[0]++; }
+                        } finally {
+                            countersMutex.release();
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt(); return;
+                    }
+                }
+            }, "part-worker-" + t);
+        }
+
+        long start = System.nanoTime();
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) {
+            try { t.join(); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+        long elapsed = System.nanoTime() - start;
+
+        return new RoundResult(elapsed, served[0], rejected[0], randoms[0]);
+    }
+
+    static int processRequestPartitioned(WorstFitPartitioned wf, GerenciadorLiberacaoPartitioned gerenciador,
+                                          Requisitor_Memoria req) {
+        int result = wf.allocate(req.getSize(), req.getId());
+        if (result >= 0) return 1;
+        GerenciadorLiberacao.RelatorioLiberacao rel = gerenciador.executarLiberacaoRandomica();
+        if (rel.getBlocosLiberados() == 0) return -1;
+        result = wf.allocate(req.getSize(), req.getId());
+        return result >= 0 ? 2 : -1;
     }
 }
