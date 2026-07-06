@@ -27,8 +27,7 @@ Na raiz do projeto:
 mkdir -p out
 
 # Compilar todos os arquivos de uma vez (ordem correta de dependências)
-javac -d out sync/Semaphore.java model/Heap.java model/Requisitor_Memoria.java model/WorstFit.java model/GerenciadorLiberacao.java benchmark/HeapBenchmark.java model/HeapApiServer.java
-```
+```javac -d out .\sync\*.java .\model\*.java .\benchmark\*.java 
 
 Se compilar sem erros, o terminal não exibe nada. A pasta `out/` terá os `.class` organizados por pacote.
 
