@@ -202,8 +202,7 @@ public class HeapApiServer {
         final int threadCount = WorstFitPartitioned.NUM_SEGMENTS;
         final int segmentCount = WorstFitPartitioned.NUM_SEGMENTS;
 
-        int visualRequests = Math.max(1, Math.min(totalRequests, 80));
-
+        int visualRequests = Math.max(1, totalRequests);
         WorstFitPartitioned wf = new WorstFitPartitioned(heapKb);
         GerenciadorLiberacaoPartitioned liberador = new GerenciadorLiberacaoPartitioned(wf);
 
