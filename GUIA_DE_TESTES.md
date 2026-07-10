@@ -22,12 +22,12 @@ src/
 
 Na raiz do projeto:
 
-```bash
+````bash
 # Criar pasta de saída
 mkdir -p out
 
 # Compilar todos os arquivos de uma vez (ordem correta de dependências)
-```javac -d out .\sync\*.java .\model\*.java .\benchmark\*.java 
+```javac -d out .\sync\*.java .\model\*.java .\benchmark\*.java
 
 Se compilar sem erros, o terminal não exibe nada. A pasta `out/` terá os `.class` organizados por pacote.
 
@@ -43,7 +43,7 @@ javac -d out sync/Semaphore.java sync/SemaphoreTest.java
 
 # Executar
 java -cp out sync.SemaphoreTest
-```
+````
 
 **O que verificar na saída:**
 
@@ -65,6 +65,7 @@ Se algum item mostrar `✗ FALHOU`, há problema no semáforo antes de continuar
 ## Passo 3 — Testar o WorstFit isolado (sem threads)
 
 ```bash
+javac -d out .\sync\*.java .\model\*.java .\benchmark\*.java
 java -cp out model.WorstFitTest
 ```
 

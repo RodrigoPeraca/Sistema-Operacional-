@@ -473,29 +473,29 @@ public class HeapBenchmark {
             long[] sAgg, RoundResult sLast,
             long[] pAgg, RoundResult pLast) {
 
-        System.out.println("\n┌─────────────────────────────────────────────────────────────────┐");
+        System.out.println("\n┌────────────────────────────────────────────────────────────────┐");
         System.out.println("│  VERSÃO 1: WorstFitUnsafe (Sequencial, sem mutex)              │");
-        System.out.println("├──────────────────┬────────────────────────────────────────────┤");
+        System.out.println("├──────────────────┬─────────────────────────────────────────────┤");
         System.out.printf("│  Latência média  │ %7.2f ms                                  │%n", uAgg[2] / 1e6);
-        System.out.printf("│  Throughput méd  │ %,7d req/s                              │%n", uAgg[5]);
+        System.out.printf("│  Throughput méd  │ %,7d req/s                               │%n", uAgg[5]);
         System.out.printf("│  Atendidas       │ %-6d                                      │%n", uLast.served);
         System.out.printf("│  Rejeitadas      │ %-6d                                      │%n", uLast.rejected);
         System.out.printf("│  RANDOM acionado │ %-6d                                      │%n", uLast.randoms);
 
-        System.out.println("├─────────────────────────────────────────────────────────────────┤");
+        System.out.println("├────────────────────────────────────────────────────────────────┤");
         System.out.printf("│  VERSÃO 2: WorstFitSynchronized (Paralelo, %d threads, 1 mutex) │%n", SYNC_THREAD_COUNT);
-        System.out.println("├──────────────────┬────────────────────────────────────────────┤");
+        System.out.println("├──────────────────┬─────────────────────────────────────────────┤");
         System.out.printf("│  Latência média  │ %7.2f ms                                  │%n", sAgg[2] / 1e6);
-        System.out.printf("│  Throughput méd  │ %,7d req/s                              │%n", sAgg[5]);
+        System.out.printf("│  Throughput méd  │ %,7d req/s                               │%n", sAgg[5]);
         System.out.printf("│  Atendidas       │ %-6d                                      │%n", sLast.served);
         System.out.printf("│  Rejeitadas      │ %-6d                                      │%n", sLast.rejected);
         System.out.printf("│  RANDOM acionado │ %-6d                                      │%n", sLast.randoms);
 
-        System.out.println("├─────────────────────────────────────────────────────────────────┤");
+        System.out.println("├────────────────────────────────────────────────────────────────┤");
         System.out.printf("│  VERSÃO 3: WorstFitPartitioned (Paralelo, %d threads, N mutexes)│%n", PART_THREAD_COUNT);
-        System.out.println("├──────────────────┬────────────────────────────────────────────┤");
+        System.out.println("├──────────────────┬─────────────────────────────────────────────┤");
         System.out.printf("│  Latência média  │ %7.2f ms                                  │%n", pAgg[2] / 1e6);
-        System.out.printf("│  Throughput méd  │ %,7d req/s                              │%n", pAgg[5]);
+        System.out.printf("│  Throughput méd  │ %,7d req/s                               │%n", pAgg[5]);
         System.out.printf("│  Atendidas       │ %-6d                                      │%n", pLast.served);
         System.out.printf("│  Rejeitadas      │ %-6d                                      │%n", pLast.rejected);
         System.out.printf("│  RANDOM acionado │ %-6d                                      │%n", pLast.randoms);
@@ -542,7 +542,7 @@ public class HeapBenchmark {
         System.out.println("║                          TABELA DE ESCALABILIDADE                                   ║");
         System.out.println("╠════════╦════════╦══════════╦══════════╦══════════╦════════╦════════╦════════════════╣");
         System.out.println("║ Heap   ║  Reqs  ║ Unsafe   ║ Sync     ║ Part     ║ Sp     ║ Sp     ║ Efic. Part     ║");
-        System.out.println("║  (KB)  ║        ║ (ms)     ║ (ms)     ║ (ms)     ║ U->S    ║ S->P    ║ (%)            ║");
+        System.out.println("║  (KB)  ║        ║ (ms)     ║ (ms)     ║ (ms)     ║ U->S   ║ S->P   ║ (%)            ║");
         System.out.println("╠════════╬════════╬══════════╬══════════╬══════════╬════════╬════════╬════════════════╣");
 
         for (int heapKb : heapSizesKb) {
@@ -597,15 +597,15 @@ public class HeapBenchmark {
         BenchmarkParams params = new BenchmarkParams(heapKb, totalRequests, 16, 256);
 
         System.out.println("╔═══════════════════════════════════════════════════════╗");
-        System.out.println("║  BENCHMARK: 3 VERSÕES (Unsafe, Synchronized, Partitioned)║");
+        System.out.println("║  BENCHMARK: 3 VERSÕES (Unsafe, Sync, particionado)    ║");
         System.out.println("╠═══════════════════════════════════════════════════════╣");
-        System.out.printf("║  Heap           : %-34d KB║%n", params.heapKb);
-        System.out.printf("║  Requisições    : %-37d  ║%n", params.totalRequests);
-        System.out.printf("║  Tam. req       : %d - %-31d B ║%n", params.minBytes, params.maxBytes);
-        System.out.printf("║  Threads (Sync) : %-37d  ║%n", SYNC_THREAD_COUNT);
-        System.out.printf("║  Threads (Part) : %-37d  ║%n", PART_THREAD_COUNT);
-        System.out.printf("║  Warmup         : %-37d  ║%n", WARMUP_ROUNDS);
-        System.out.printf("║  Medições       : %-37d  ║%n", MEASURE_ROUNDS);
+        System.out.printf("║  Heap           : %-33d KB║%n", params.heapKb);
+        System.out.printf("║  Requisições    : %-34d  ║%n", params.totalRequests);
+        System.out.printf("║  Tam. req       : %d - %-28d B ║%n", params.minBytes, params.maxBytes);
+        System.out.printf("║  Threads (Sync) : %-34d  ║%n", SYNC_THREAD_COUNT);
+        System.out.printf("║  Threads (Part) : %-34d  ║%n", PART_THREAD_COUNT);
+        System.out.printf("║  Warmup         : %-34d  ║%n", WARMUP_ROUNDS);
+        System.out.printf("║  Medições       : %-34d  ║%n", MEASURE_ROUNDS);
         System.out.println("╠═══════════════════════════════════════════════════════╣");
         System.out.println("║  Fila: AtomicInteger (lock-free, sem distorção)       ║");
         System.out.println("║  Contadores: por thread (sem mutex, sem contenção)    ║");

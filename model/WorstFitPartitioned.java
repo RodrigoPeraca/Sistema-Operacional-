@@ -63,11 +63,23 @@ public class WorstFitPartitioned {
             freeCount -= size;
         }
 
-        /** Lido sem lock — verifica null antes do unboxing para evitar NPE concorrente. */
+        /**
+         * Lido SEM lock — usado apenas para triagem antes de adquirir o mutex.
+         *
+         * Problema: TreeMap NÃO é thread-safe para leitura concorrente com escrita.
+         * Entre isEmpty() e lastKey(), outra thread pode remover o último elemento,
+         * causando NoSuchElementException (não NPE — é lançada pela TreeMap diretamente).
+         * Verificar null não resolve: a exceção vem ANTES do retorno do método.
+         *
+         * Fix: try/catch(NoSuchElementException) envolve lastKey() completamente.
+         * Valor retornado pode estar defasado — o double-check dentro do mutex corrige.
+         */
         int peekLargest() {
-            if (sizeToIndices.isEmpty()) return 0;
-            Integer key = sizeToIndices.lastKey();
-            return key == null ? 0 : key;
+            try {
+                return sizeToIndices.lastKey(); // lança NoSuchElementException se vazio
+            } catch (java.util.NoSuchElementException e) {
+                return 0; // mapa vazio ou modificado concorrentemente — sem espaço
+            }
         }
     }
 
@@ -218,8 +230,14 @@ public class WorstFitPartitioned {
             seg.mutex.acquire();                        // P
             try {
                 // Double-check após adquirir lock
-                if (seg.sizeToIndices.isEmpty()) return -1;
-                Integer largestKey = seg.sizeToIndices.lastKey();
+                // Usa try/catch pelo mesmo motivo que peekLargest():
+                // isEmpty() + lastKey() não é atômico — usa catch como defesa
+                Integer largestKey;
+                try {
+                    largestKey = seg.sizeToIndices.lastKey();
+                } catch (java.util.NoSuchElementException e) {
+                    return -1; // segmento vazio
+                }
                 if (largestKey == null || largestKey < sizeInInts) return -1;
 
                 TreeSet<Integer> indices = seg.sizeToIndices.get(largestKey);
